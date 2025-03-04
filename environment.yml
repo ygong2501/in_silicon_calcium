@@ -1,0 +1,13 @@
+name: calcium
+channels:
+  - defaults
+dependencies:
+  - python=3.9
+  - matplotlib
+  - numpy
+  - pandas
+  - scipy
+  - seaborn
+  - peakutils
+  - py7zr
+prefix: C:\Users\qlbsg\anaconda3\envs\calcium
