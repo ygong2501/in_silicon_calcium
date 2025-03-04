@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# Calcium Signaling Simulation - GUI version
+# Calcium Signaling Simulation - GUI version with parameter validation and batch video generation
 
 import numpy as np
 import os
@@ -11,6 +11,7 @@ import sys
 import subprocess
 import urllib.request
 import traceback
+import random
 from pathlib import Path
 import time
 import threading
@@ -80,6 +81,9 @@ class CalciumSignalingGUI:
         
         self.message_queue = queue.Queue()
         self.simulation_running = False
+        self.batch_running = False
+        self.current_batch_sim = 0
+        self.total_batch_sims = 0
         self.pouch = None
         self.save_folder = os.path.join(os.path.dirname(os.path.abspath(__file__)), "simulationResults")
         
@@ -113,7 +117,7 @@ class CalciumSignalingGUI:
             'D_c_ratio': 0.1
         }
         
-        # Parameter ranges for sliders (min, max, default, description)
+        # Parameter ranges with validation (min, max, default, description)
         self.parameter_ranges = {
             'K_PLC': (0.01, 1.0, 0.2, "IP3 receptor calcium binding coefficient"),
             'K_5': (0.1, 2.0, 0.66, "IP3 degradation rate"),
@@ -137,8 +141,15 @@ class CalciumSignalingGUI:
         
         # Create parameter variables to store the current values
         self.param_vars = {}
-        for param, (min_val, max_val, default) in self.parameter_ranges.items():
+        self.param_min_vars = {}
+        self.param_max_vars = {}
+        self.param_random_vars = {}
+        
+        for param, (min_val, max_val, default, _) in self.parameter_ranges.items():
             self.param_vars[param] = tk.DoubleVar(value=default)
+            self.param_min_vars[param] = tk.DoubleVar(value=min_val)
+            self.param_max_vars[param] = tk.DoubleVar(value=max_val)
+            self.param_random_vars[param] = tk.BooleanVar(value=False)
         
         self.create_widgets()
         
@@ -179,13 +190,21 @@ class CalciumSignalingGUI:
         browse_btn = ttk.Button(top_frame, text="Browse...", command=self.browse_output_folder)
         browse_btn.grid(row=1, column=3, sticky=tk.W, padx=5, pady=5)
         
-        # Creating a notebook for parameters and output
+        # Creating a notebook for parameters, batch, and output
         notebook = ttk.Notebook(main_frame)
         notebook.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
         
         # Parameters tab
         params_frame = ttk.Frame(notebook, padding="10")
         notebook.add(params_frame, text="Parameters")
+        
+        # Batch tab
+        batch_frame = ttk.Frame(notebook, padding="10")
+        notebook.add(batch_frame, text="Batch Generation")
+        
+        # Output tab
+        output_frame = ttk.Frame(notebook)
+        notebook.add(output_frame, text="Output")
         
         # Create a canvas with scrollbar for parameters
         canvas_frame = ttk.Frame(params_frame)
@@ -207,41 +226,39 @@ class CalciumSignalingGUI:
         scrollbar.pack(side="right", fill="y")
         
         # Add parameter sliders to the scrollable frame
-        row = 0
-        # Group parameters in three columns
-        param_groups = []
-        current_group = []
-        for i, param in enumerate(sorted(self.parameter_ranges.keys())):
-            current_group.append(param)
-            if len(current_group) == 6 or i == len(self.parameter_ranges) - 1:
-                param_groups.append(current_group)
-                current_group = []
+        header_frame = ttk.Frame(scrollable_frame)
+        header_frame.pack(fill=tk.X, pady=5)
         
-        # Create frames for each parameter group
-        param_frames = []
-        for group in param_groups:
-            frame = ttk.Frame(scrollable_frame)
-            frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=10)
-            param_frames.append(frame)
+        ttk.Label(header_frame, text="Parameter", width=15).grid(row=0, column=0, sticky=tk.W)
+        ttk.Label(header_frame, text="Value", width=30).grid(row=0, column=1)
+        ttk.Label(header_frame, text="Current", width=8).grid(row=0, column=2)
+        ttk.Label(header_frame, text="Description", width=40).grid(row=0, column=3, sticky=tk.W)
         
-        # Add sliders to each parameter group frame
-        for frame_idx, (frame, group) in enumerate(zip(param_frames, param_groups)):
-            for row, param in enumerate(group):
-                min_val, max_val, default = self.parameter_ranges[param]
-                
-                # Parameter label
-                param_label = ttk.Label(frame, text=f"{param}:")
-                param_label.grid(row=row, column=0, sticky=tk.W, padx=5, pady=2)
-                
-                # Parameter slider
-                slider = ttk.Scale(frame, from_=min_val, to=max_val, 
-                                  variable=self.param_vars[param], 
-                                  orient=tk.HORIZONTAL, length=200)
-                slider.grid(row=row, column=1, sticky=tk.W+tk.E, padx=5, pady=2)
-                
-                # Parameter value display
-                value_label = ttk.Label(frame, textvariable=self.param_vars[param], width=8)
-                value_label.grid(row=row, column=2, sticky=tk.W, padx=5, pady=2)
+        # Group parameters
+        param_frame = ttk.Frame(scrollable_frame)
+        param_frame.pack(fill=tk.BOTH, expand=True)
+        
+        # Add sliders for each parameter
+        for row, param in enumerate(sorted(self.parameter_ranges.keys())):
+            min_val, max_val, default, desc = self.parameter_ranges[param]
+            
+            # Parameter label
+            param_label = ttk.Label(param_frame, text=f"{param}:")
+            param_label.grid(row=row, column=0, sticky=tk.W, padx=5, pady=2)
+            
+            # Parameter slider
+            slider = ttk.Scale(param_frame, from_=min_val, to=max_val, 
+                              variable=self.param_vars[param], 
+                              orient=tk.HORIZONTAL, length=300)
+            slider.grid(row=row, column=1, sticky=tk.W+tk.E, padx=5, pady=2)
+            
+            # Parameter value display
+            value_label = ttk.Label(param_frame, textvariable=self.param_vars[param], width=8)
+            value_label.grid(row=row, column=2, sticky=tk.W, padx=5, pady=2)
+            
+            # Parameter description
+            desc_label = ttk.Label(param_frame, text=desc, wraplength=300)
+            desc_label.grid(row=row, column=3, sticky=tk.W, padx=5, pady=2)
         
         # Add preset buttons
         preset_frame = ttk.Frame(params_frame)
@@ -254,9 +271,76 @@ class CalciumSignalingGUI:
                                    command=lambda p=preset_name: self.load_preset(p))
             preset_btn.pack(side=tk.LEFT, padx=5)
         
-        # Output tab
-        output_frame = ttk.Frame(notebook)
-        notebook.add(output_frame, text="Output")
+        # Create batch tab content
+        batch_top_frame = ttk.Frame(batch_frame)
+        batch_top_frame.pack(fill=tk.X, padx=5, pady=5)
+        
+        ttk.Label(batch_top_frame, text="Number of Simulations:").grid(row=0, column=0, sticky=tk.W, padx=5, pady=5)
+        self.batch_count_var = tk.IntVar(value=5)
+        batch_count_spinbox = ttk.Spinbox(batch_top_frame, from_=1, to=100, textvariable=self.batch_count_var, width=5)
+        batch_count_spinbox.grid(row=0, column=1, sticky=tk.W, padx=5, pady=5)
+        
+        ttk.Label(batch_top_frame, text="Prefix for Saved Files:").grid(row=0, column=2, sticky=tk.W, padx=5, pady=5)
+        self.batch_prefix_var = tk.StringVar(value="Batch")
+        batch_prefix_entry = ttk.Entry(batch_top_frame, textvariable=self.batch_prefix_var, width=15)
+        batch_prefix_entry.grid(row=0, column=3, sticky=tk.W, padx=5, pady=5)
+        
+        # Auto-generate animations checkbox
+        self.batch_animations_var = tk.BooleanVar(value=False)
+        batch_animations_check = ttk.Checkbutton(batch_top_frame, text="Generate animations", 
+                                               variable=self.batch_animations_var)
+        batch_animations_check.grid(row=0, column=4, sticky=tk.W, padx=5, pady=5)
+        
+        # Create parameter range settings for batch generation
+        batch_params_frame = ttk.Frame(batch_frame)
+        batch_params_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+        
+        # Headers
+        ttk.Label(batch_params_frame, text="Parameter", width=15).grid(row=0, column=0, sticky=tk.W)
+        ttk.Label(batch_params_frame, text="Randomize", width=10).grid(row=0, column=1)
+        ttk.Label(batch_params_frame, text="Min Value", width=10).grid(row=0, column=2)
+        ttk.Label(batch_params_frame, text="Max Value", width=10).grid(row=0, column=3)
+        ttk.Label(batch_params_frame, text="Description", width=40).grid(row=0, column=4, sticky=tk.W)
+        
+        # Add parameter range controls
+        for row, param in enumerate(sorted(self.parameter_ranges.keys()), 1):
+            min_val, max_val, default, desc = self.parameter_ranges[param]
+            
+            # Parameter label
+            param_label = ttk.Label(batch_params_frame, text=f"{param}:")
+            param_label.grid(row=row, column=0, sticky=tk.W, padx=5, pady=2)
+            
+            # Randomize checkbox
+            random_check = ttk.Checkbutton(batch_params_frame, variable=self.param_random_vars[param])
+            random_check.grid(row=row, column=1, padx=5, pady=2)
+            
+            # Min value entry
+            min_entry = ttk.Entry(batch_params_frame, textvariable=self.param_min_vars[param], width=10)
+            min_entry.grid(row=row, column=2, padx=5, pady=2)
+            
+            # Max value entry
+            max_entry = ttk.Entry(batch_params_frame, textvariable=self.param_max_vars[param], width=10)
+            max_entry.grid(row=row, column=3, padx=5, pady=2)
+            
+            # Parameter description
+            desc_label = ttk.Label(batch_params_frame, text=desc, wraplength=300)
+            desc_label.grid(row=row, column=4, sticky=tk.W, padx=5, pady=2)
+        
+        # Add parameter preset buttons for batch
+        batch_preset_frame = ttk.Frame(batch_frame)
+        batch_preset_frame.pack(fill=tk.X, padx=5, pady=10)
+        
+        ttk.Label(batch_preset_frame, text="Randomize Selected Parameters For:").pack(side=tk.LEFT, padx=5)
+        
+        for preset_name in self.simulation_types.keys():
+            preset_btn = ttk.Button(batch_preset_frame, text=preset_name,
+                                   command=lambda p=preset_name: self.set_batch_preset(p))
+            preset_btn.pack(side=tk.LEFT, padx=5)
+        
+        # Add batch run button
+        batch_run_btn = ttk.Button(batch_frame, text="Run Batch Simulations", 
+                                  command=self.run_batch_simulations)
+        batch_run_btn.pack(pady=10)
         
         # Create text widget for output
         self.output_text = scrolledtext.ScrolledText(output_frame, wrap=tk.WORD, height=20)
@@ -316,7 +400,7 @@ class CalciumSignalingGUI:
             self.param_vars['upper'].set(params['upper_VPLC'])
             
             # Reset other parameters to defaults
-            for param, (min_val, max_val, default) in self.parameter_ranges.items():
+            for param, (min_val, max_val, default, _) in self.parameter_ranges.items():
                 if param not in ['lower', 'upper']:
                     self.param_vars[param].set(default)
             
@@ -327,6 +411,46 @@ class CalciumSignalingGUI:
             self.output_folder_var.set(self.save_folder)
             
             messagebox.showinfo("Preset Loaded", f"Loaded parameters for '{preset_name}' simulation")
+    
+    def set_batch_preset(self, preset_name):
+        """Set batch randomization presets for a specific simulation type"""
+        if preset_name in self.simulation_types:
+            # Reset all randomization flags to False
+            for param in self.param_random_vars:
+                self.param_random_vars[param].set(False)
+            
+            # Set min/max values to the parameter ranges
+            for param, (min_val, max_val, _, _) in self.parameter_ranges.items():
+                self.param_min_vars[param].set(min_val)
+                self.param_max_vars[param].set(max_val)
+            
+            # Set specific parameters based on the simulation type
+            if preset_name == "Single cell spikes":
+                # For single cell spikes, randomize calcium-related parameters
+                for param in ['K_PLC', 'K_5', 'k_1', 'k_a', 'k_p', 'k_2']:
+                    self.param_random_vars[param].set(True)
+                
+            elif preset_name == "Intercellular transients":
+                # For ICT, randomize diffusion and cell-to-cell communication
+                for param in ['D_p', 'D_c_ratio', 'frac']:
+                    self.param_random_vars[param].set(True)
+                
+            elif preset_name == "Intercellular waves":
+                # For ICW, randomize wave propagation parameters
+                for param in ['lower', 'upper', 'D_p', 'D_c_ratio']:
+                    self.param_random_vars[param].set(True)
+                
+            elif preset_name == "Fluttering":
+                # For fluttering, randomize ER-related parameters
+                for param in ['V_SERCA', 'K_SERCA', 'c_tot', 'beta']:
+                    self.param_random_vars[param].set(True)
+            
+            # Always randomize these parameters for variety
+            self.param_random_vars['frac'].set(True)
+            
+            messagebox.showinfo("Batch Preset Applied", 
+                               f"Randomization settings updated for '{preset_name}' simulation. " +
+                               f"You can adjust which parameters to randomize in the table.")
     
     def browse_output_folder(self):
         """Open a dialog to select output folder"""
@@ -399,7 +523,36 @@ class CalciumSignalingGUI:
             params[param] = var.get()
         return params
     
-    def run_simulation(self):
+    def generate_random_parameters(self):
+        """Generate random parameters within specified ranges for batch simulation"""
+        params = {}
+        
+        for param in self.parameter_ranges:
+            if self.param_random_vars[param].get():
+                # Use random value within the specified min/max range
+                min_val = self.param_min_vars[param].get()
+                max_val = self.param_max_vars[param].get()
+                params[param] = random.uniform(min_val, max_val)
+            else:
+                # Use the current set value
+                params[param] = self.param_vars[param].get()
+        
+        return params
+    
+    def validate_parameters(self, params):
+        """Validate parameters against their allowed ranges"""
+        for param, value in params.items():
+            min_val, max_val, _, _ = self.parameter_ranges[param]
+            if value < min_val or value > max_val:
+                return False, f"Parameter {param} value {value} is outside allowed range [{min_val}, {max_val}]"
+        
+        # Additional validation: upper should be greater than lower for VPLC
+        if params['upper'] <= params['lower']:
+            return False, f"Upper VPLC value ({params['upper']}) must be greater than lower VPLC value ({params['lower']})"
+        
+        return True, "Parameters valid"
+    
+    def run_simulation(self, batch_mode=False, batch_params=None, batch_idx=None):
         """Run the calcium signaling simulation"""
         if self.simulation_running:
             messagebox.showinfo("Simulation Running", "A simulation is already running. Please wait for it to finish.")
@@ -410,24 +563,44 @@ class CalciumSignalingGUI:
         os.makedirs(output_folder, exist_ok=True)
         
         # Get simulation parameters
-        sim_params = self.create_parameter_dict()
+        if batch_mode and batch_params:
+            sim_params = batch_params
+            sim_number = batch_idx
+            save_name = f"{self.batch_prefix_var.get()}_{batch_idx}"
+        else:
+            sim_params = self.create_parameter_dict()
+            sim_number = int(time.time()) % 100000  # Use current time as simulation number
+            save_name = f"Demo_{self.simulation_types[self.sim_type_var.get()]['save_name']}"
+        
+        # Validate parameters
+        valid, message = self.validate_parameters(sim_params)
+        if not valid:
+            if not batch_mode:
+                messagebox.showerror("Invalid Parameters", message)
+            self.log_output(f"Parameter validation error: {message}\n")
+            return False
+        
         pouch_size = self.pouch_size_var.get()
-        sim_type = self.sim_type_var.get()
-        save_name = self.simulation_types[sim_type]['save_name']
         
         # Update UI
-        self.run_button.configure(state=tk.DISABLED)
-        self.stop_button.configure(state=tk.NORMAL)
-        self.animation_button.configure(state=tk.DISABLED)
-        self.update_progress(0, "Starting simulation...")
-        
-        # Clear output window
-        self.output_text.configure(state="normal")
-        self.output_text.delete(1.0, tk.END)
-        self.output_text.configure(state="disabled")
+        if not batch_mode:
+            self.run_button.configure(state=tk.DISABLED)
+            self.stop_button.configure(state=tk.NORMAL)
+            self.animation_button.configure(state=tk.DISABLED)
+            self.update_progress(0, "Starting simulation...")
+            
+            # Clear output window
+            self.output_text.configure(state="normal")
+            self.output_text.delete(1.0, tk.END)
+            self.output_text.configure(state="disabled")
         
         # Log parameters
-        self.log_output(f"Running {sim_type} simulation with {pouch_size} pouch size\n")
+        self.log_output(f"\n{'='*80}\n")
+        if batch_mode:
+            self.log_output(f"Running batch simulation {batch_idx}/{self.total_batch_sims}\n")
+        else:
+            self.log_output(f"Running {self.sim_type_var.get()} simulation with {pouch_size} pouch size\n")
+        
         self.log_output(f"Output folder: {output_folder}\n")
         self.log_output("Parameters:\n")
         for param, value in sim_params.items():
@@ -436,11 +609,97 @@ class CalciumSignalingGUI:
         
         # Start simulation in a separate thread
         self.simulation_running = True
-        threading.Thread(target=self.simulation_thread, 
-                        args=(sim_params, pouch_size, sim_type, save_name, output_folder),
-                        daemon=True).start()
+        
+        sim_thread = threading.Thread(
+            target=self.simulation_thread, 
+            args=(sim_params, pouch_size, save_name, output_folder, sim_number, batch_mode),
+            daemon=True
+        )
+        sim_thread.start()
+        
+        return True
     
-    def simulation_thread(self, sim_params, pouch_size, sim_type, save_name, output_folder):
+    def run_batch_simulations(self):
+        """Run multiple simulations with randomized parameters"""
+        if self.simulation_running or self.batch_running:
+            messagebox.showinfo("Simulation Running", "A simulation is already running. Please wait for it to finish.")
+            return
+        
+        # Get batch settings
+        self.total_batch_sims = self.batch_count_var.get()
+        
+        if self.total_batch_sims <= 0:
+            messagebox.showerror("Invalid Batch Count", "Number of simulations must be greater than 0")
+            return
+        
+        # Check that at least one parameter is set to be randomized
+        any_randomized = False
+        for param in self.param_random_vars:
+            if self.param_random_vars[param].get():
+                any_randomized = True
+                break
+        
+        if not any_randomized:
+            messagebox.showinfo("No Randomized Parameters", 
+                               "No parameters are selected for randomization. Please select at least one parameter to randomize.")
+            return
+        
+        # Start batch processing
+        self.batch_running = True
+        self.current_batch_sim = 0
+        
+        # Update UI
+        self.run_button.configure(state=tk.DISABLED)
+        self.stop_button.configure(state=tk.NORMAL)
+        self.animation_button.configure(state=tk.DISABLED)
+        
+        # Clear output window
+        self.output_text.configure(state="normal")
+        self.output_text.delete(1.0, tk.END)
+        self.output_text.configure(state="disabled")
+        
+        self.log_output(f"Starting batch of {self.total_batch_sims} simulations\n")
+        self.log_output(f"Randomized parameters: ")
+        for param in self.param_random_vars:
+            if self.param_random_vars[param].get():
+                min_val = self.param_min_vars[param].get()
+                max_val = self.param_max_vars[param].get()
+                self.log_output(f"{param} [{min_val:.4f}-{max_val:.4f}], ")
+        self.log_output("\n\n")
+        
+        # Start the first simulation
+        self.process_next_batch_simulation()
+    
+    def process_next_batch_simulation(self):
+        """Process the next simulation in the batch"""
+        if not self.batch_running:
+            return
+        
+        self.current_batch_sim += 1
+        
+        if self.current_batch_sim <= self.total_batch_sims:
+            # Generate random parameters
+            batch_params = self.generate_random_parameters()
+            
+            # Update progress
+            batch_progress = (self.current_batch_sim - 1) / self.total_batch_sims * 100
+            self.update_progress(batch_progress, f"Batch simulation {self.current_batch_sim}/{self.total_batch_sims}")
+            
+            # Run the simulation
+            success = self.run_simulation(batch_mode=True, batch_params=batch_params, batch_idx=self.current_batch_sim)
+            
+            if not success:
+                # Skip to next simulation if this one failed validation
+                self.root.after(100, self.process_next_batch_simulation)
+        else:
+            # All simulations complete
+            self.batch_running = False
+            self.update_progress(100, "Batch simulations complete")
+            self.log_output("\nAll batch simulations completed!\n")
+            self.run_button.configure(state=tk.NORMAL)
+            self.stop_button.configure(state=tk.DISABLED)
+    
+    def simulation_thread(self, sim_params, pouch_size, save_name, output_folder, sim_number, batch_mode=False):
         """Run the simulation in a background thread"""
         try:
             # Import simulation class
@@ -456,7 +715,7 @@ class CalciumSignalingGUI:
             
             # Create Pouch object
             self.log_output("Creating simulation object...\n")
-            self.pouch = Pouch(params=sim_params, size=pouch_size, sim_number=12345, save=True, saveName=f'Demo_{save_name}')
+            self.pouch = Pouch(params=sim_params, size=pouch_size, sim_number=sim_number, save=True, saveName=save_name)
             
             # Run simulation with progress updates
             self.log_output("Running simulation...\n")
@@ -482,7 +741,7 @@ class CalciumSignalingGUI:
                 
                 # ODE approximation solving
                 for step in range(1, self.pouch.T):
-                    if not self.simulation_running:
+                    if not self.simulation_running or not (self.batch_running if batch_mode else True):
                         print("\nSimulation stopped by user.")
                         return
                     
@@ -493,7 +752,14 @@ class CalciumSignalingGUI:
                         eta = (elapsed / step) * (total_steps - step)
                         status = f"Progress: {progress:.1f}% | Elapsed: {elapsed:.1f}s | ETA: {eta:.1f}s"
                         print(status, end="\r")
-                        self.root.after(0, lambda p=progress, s=status: self.update_progress(p, s))
+                        
+                        # For batch mode, combine simulation and batch progress
+                        if batch_mode:
+                            batch_progress = ((self.current_batch_sim - 1) + progress/100) / self.total_batch_sims * 100
+                            status = f"Batch {self.current_batch_sim}/{self.total_batch_sims} - {status}"
+                            self.root.after(0, lambda p=batch_progress, s=status: self.update_progress(p, s))
+                        else:
+                            self.root.after(0, lambda p=progress, s=status: self.update_progress(p, s))
                     
                     # ARRAY REFORMATTING
                     ca = self.pouch.disc_dynamics[:,0,step-1].reshape(-1,1)
@@ -517,19 +783,36 @@ class CalciumSignalingGUI:
             # Run simulation
             self.pouch.simulate()
             
-            if self.simulation_running:  # Only continue if not stopped
+            if self.simulation_running and (self.batch_running if batch_mode else True):  # Only continue if not stopped
                 # Generate outputs
                 self.log_output("\nGenerating VPLC profile...\n")
-                self.update_progress(90, "Generating VPLC profile...")
+                if batch_mode:
+                    batch_progress = ((self.current_batch_sim - 1) + 0.9) / self.total_batch_sims * 100
+                    self.update_progress(batch_progress, f"Batch {self.current_batch_sim}/{self.total_batch_sims} - Generating VPLC profile...")
+                else:
+                    self.update_progress(90, "Generating VPLC profile...")
+                    
                 self.pouch.draw_profile(output_folder)
                 
                 self.log_output("Generating kymograph...\n")
-                self.update_progress(95, "Generating kymograph...")
+                if batch_mode:
+                    batch_progress = ((self.current_batch_sim - 1) + 0.95) / self.total_batch_sims * 100
+                    self.update_progress(batch_progress, f"Batch {self.current_batch_sim}/{self.total_batch_sims} - Generating kymograph...")
+                else:
+                    self.update_progress(95, "Generating kymograph...")
+                    
                 self.pouch.draw_kymograph(output_folder)
+                
+                # Generate animation if requested in batch mode
+                if batch_mode and self.batch_animations_var.get():
+                    self.log_output("Generating animation...\n")
+                    self.pouch.make_animation(output_folder)
                 
                 self.log_output("\nSimulation complete!\n")
                 self.log_output(f"Results saved to: {output_folder}\n")
-                self.update_progress(100, "Simulation complete")
+                
+                if not batch_mode:
+                    self.update_progress(100, "Simulation complete")
             
             # Reset stdout
             sys.stdout = original_stdout
@@ -540,7 +823,12 @@ class CalciumSignalingGUI:
             traceback.print_exc()
         finally:
             self.simulation_running = False
-            self.root.after(0, self.simulation_finished)
+            
+            if batch_mode:
+                # Continue with next batch simulation
+                self.root.after(100, self.process_next_batch_simulation)
+            else:
+                self.root.after(0, self.simulation_finished)
     
     def simulation_finished(self):
         """Update UI after simulation is finished"""
@@ -553,6 +841,7 @@ class CalciumSignalingGUI:
         """Stop the running simulation"""
         if self.simulation_running:
             self.simulation_running = False
+            self.batch_running = False
             self.log_output("\nStopping simulation...\n")
             self.status_var.set("Stopping simulation...")
     
